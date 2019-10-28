@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/mindprince/gonvml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/xofym/gonvml"
 )
 
 const (

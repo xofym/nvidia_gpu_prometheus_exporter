@@ -1,5 +1,5 @@
-PKG=github.com/mindprince/nvidia_gpu_prometheus_exporter
-REGISTRY=mindprince
+PKG=github.com/xofym/nvidia_gpu_prometheus_exporter
+REGISTRY=xofym
 IMAGE=nvidia_gpu_prometheus_exporter
 TAG=0.1
 
