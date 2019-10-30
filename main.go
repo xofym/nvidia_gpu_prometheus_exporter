@@ -2,13 +2,14 @@ package main
 
 import (
 	"flag"
-	"log"
 	"net/http"
 	"strconv"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/xofym/gonvml"
 )
 
@@ -17,7 +18,8 @@ const (
 )
 
 var (
-	addr = flag.String("web.listen-address", ":9445", "Address to listen on for web interface and telemetry.")
+	addr  = flag.String("web.listen-address", ":9445", "Address to listen on for web interface and telemetry.")
+	debug = flag.Bool("log.debug", false, "sets log level to debug")
 
 	labels = []string{"minor_number", "uuid", "name"}
 )
@@ -117,7 +119,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	numDevices, err := gonvml.DeviceCount()
 	if err != nil {
-		log.Printf("DeviceCount() error: %v", err)
+		log.Error().Err(err).Msg("Cannot get DeviceCount")
 		return
 	} else {
 		c.numDevices.Set(float64(numDevices))
@@ -125,34 +127,51 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	for i := 0; i < int(numDevices); i++ {
+		// Device information
 		dev, err := gonvml.DeviceHandleByIndex(uint(i))
 		if err != nil {
-			log.Printf("DeviceHandleByIndex(%d) error: %v", i, err)
+			log.Warn().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get DeviceHandleByIndex")
 			continue
 		}
 
 		minorNumber, err := dev.MinorNumber()
 		if err != nil {
-			log.Printf("MinorNumber() error: %v", err)
+			log.Warn().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get device MinorNumber")
 			continue
 		}
 		minor := strconv.Itoa(int(minorNumber))
 
 		uuid, err := dev.UUID()
 		if err != nil {
-			log.Printf("UUID() error: %v", err)
+			log.Warn().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get device UUID")
 			continue
 		}
 
 		name, err := dev.Name()
 		if err != nil {
-			log.Printf("Name() error: %v", err)
+			log.Warn().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get device Name")
 			continue
 		}
 
+		// Metrics
 		totalMemory, usedMemory, err := dev.MemoryInfo()
 		if err != nil {
-			log.Printf("MemoryInfo() error: %v", err)
+			log.Debug().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get MemoryInfo")
 		} else {
 			c.usedMemory.WithLabelValues(minor, uuid, name).Set(float64(usedMemory))
 			c.totalMemory.WithLabelValues(minor, uuid, name).Set(float64(totalMemory))
@@ -160,28 +179,40 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 		dutyCycle, _, err := dev.UtilizationRates()
 		if err != nil {
-			log.Printf("UtilizationRates() error: %v", err)
+			log.Debug().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get UtilizationRates")
 		} else {
 			c.dutyCycle.WithLabelValues(minor, uuid, name).Set(float64(dutyCycle))
 		}
 
 		powerUsage, err := dev.PowerUsage()
 		if err != nil {
-			log.Printf("PowerUsage() error: %v", err)
+			log.Debug().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get PowerUsage")
 		} else {
 			c.powerUsage.WithLabelValues(minor, uuid, name).Set(float64(powerUsage))
 		}
 
 		temperature, err := dev.Temperature()
 		if err != nil {
-			log.Printf("Temperature() error: %v", err)
+			log.Debug().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get Temperature")
 		} else {
 			c.temperature.WithLabelValues(minor, uuid, name).Set(float64(temperature))
 		}
 
 		fanSpeed, err := dev.FanSpeed()
 		if err != nil {
-			log.Printf("FanSpeed() error: %v", err)
+			log.Debug().
+				Err(err).
+				Int("device_index", i).
+				Msg("Cannot get FanSpeed")
 		} else {
 			c.fanSpeed.WithLabelValues(minor, uuid, name).Set(float64(fanSpeed))
 		}
@@ -197,19 +228,38 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 func main() {
 	flag.Parse()
 
-	if err := gonvml.Initialize(); err != nil {
-		log.Fatalf("Couldn't initialize gonvml: %v. Make sure NVML is in the shared library search path.", err)
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
-	defer gonvml.Shutdown()
+
+	if err := gonvml.Initialize(); err != nil {
+		log.Fatal().
+			Err(err).
+			Msgf("Couldn't initialize gonvml. Make sure NVML is in the shared library search path.")
+	}
 
 	if driverVersion, err := gonvml.SystemDriverVersion(); err != nil {
-		log.Printf("SystemDriverVersion() error: %v", err)
+		log.Error().
+			Err(err).
+			Msg("Cannot get SystemDriverVersion()")
 	} else {
-		log.Printf("SystemDriverVersion(): %v", driverVersion)
+		log.Info().Msgf("SystemDriverVersion(): %v", driverVersion)
 	}
 
 	prometheus.MustRegister(NewCollector())
 
 	// Serve on all paths under addr
-	log.Fatalf("ListenAndServe error: %v", http.ListenAndServe(*addr, promhttp.Handler()))
+	log.Info().Msgf("Listening on %s", *addr)
+	log.Error().
+		Err(http.ListenAndServe(*addr, promhttp.Handler())).
+		Msg("Shutting down")
+
+	if err := gonvml.Shutdown(); err != nil {
+		log.Error().
+			Err(err).
+			Msg("Failed to shutdown NVML")
+	} else {
+		log.Info().Msg("Shutting down NVML")
+	}
 }
